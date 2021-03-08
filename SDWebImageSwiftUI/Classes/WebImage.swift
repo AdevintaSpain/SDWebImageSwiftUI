@@ -24,22 +24,17 @@ public struct WebImage : View {
     /// True to start animation, false to stop animation.
     @Binding public var isAnimating: Bool
     
-    @State var currentFrame: PlatformImage? = nil
-    @State var imagePlayer: SDAnimatedImagePlayer? = nil
+    @ObservedObject var imagePlayer: ImagePlayer
     
-    var maxBufferSize: UInt?
-    var customLoopCount: UInt?
-    var runLoopMode: RunLoop.Mode = .common
     var pausable: Bool = true
     var purgeable: Bool = false
-    var playbackRate: Double = 1.0
     
     /// Create a web image with url, placeholder, custom options and context.
     /// - Parameter url: The image url
     /// - Parameter options: The options to use when downloading the image. See `SDWebImageOptions` for the possible values.
     /// - Parameter context: A context contains different options to perform specify changes or processes, see `SDWebImageContextOption`. This hold the extra objects which `options` enum can not hold.
     public init(url: URL?, options: SDWebImageOptions = [], context: [SDWebImageContextOption : Any]? = nil) {
-        self.init(url: url, options: options, context: context, isAnimating: .constant(false))
+        self.init(url: url, options: options, context: context, isAnimating: .constant(true))
     }
     
     /// Create a web image with url, placeholder, custom options and context. Optional can support animated image using Binding.
@@ -57,6 +52,7 @@ public struct WebImage : View {
             }
         }
         self.imageManager = ImageManager(url: url, options: options, context: context)
+        self.imagePlayer = ImagePlayer()
     }
     
     public var body: some View {
@@ -67,30 +63,29 @@ public struct WebImage : View {
         return Group {
             if imageManager.image != nil {
                 if isAnimating && !imageManager.isIncremental {
-                    if currentFrame != nil {
-                        configure(image: currentFrame!)
-                        .onAppear {
-                            self.imagePlayer?.startPlaying()
-                        }
-                        .onDisappear {
+                    if imagePlayer.currentFrame != nil {
+                        configure(image: imagePlayer.currentFrame!)
+                        .onPlatformAppear(appear: {
+                            self.imagePlayer.startPlaying()
+                        }, disappear: {
                             if self.pausable {
-                                self.imagePlayer?.pausePlaying()
+                                self.imagePlayer.pausePlaying()
                             } else {
-                                self.imagePlayer?.stopPlaying()
+                                self.imagePlayer.stopPlaying()
                             }
                             if self.purgeable {
-                                self.imagePlayer?.clearFrameBuffer()
+                                self.imagePlayer.clearFrameBuffer()
                             }
-                        }
+                        })
                     } else {
                         configure(image: imageManager.image!)
                         .onReceive(imageManager.$image) { image in
-                            self.setupPlayer(image: image)
+                            self.imagePlayer.setupPlayer(image: image)
                         }
                     }
                 } else {
-                    if currentFrame != nil {
-                        configure(image: currentFrame!)
+                    if imagePlayer.currentFrame != nil {
+                        configure(image: imagePlayer.currentFrame!)
                     } else {
                         configure(image: imageManager.image!)
                     }
@@ -98,7 +93,7 @@ public struct WebImage : View {
             } else {
                 setupPlaceholder()
                 .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-                .onAppear {
+                .onPlatformAppear(appear: {
                     // Load remote image when first appear
                     if self.imageManager.isFirstLoad {
                         self.imageManager.load()
@@ -109,14 +104,13 @@ public struct WebImage : View {
                     if self.imageManager.image == nil && !self.imageManager.isIncremental {
                         self.imageManager.load()
                     }
-                }
-                .onDisappear {
+                }, disappear: {
                     guard self.cancelOnDisappear else { return }
                     // When using prorgessive loading, the previous partial image will cause onDisappear. Filter this case
                     if self.imageManager.image == nil && !self.imageManager.isIncremental {
                         self.imageManager.cancel()
                     }
-                }
+                })
             }
         }
     }
@@ -149,10 +143,16 @@ public struct WebImage : View {
             } else {
                 cgImage = image.cgImage
             }
-        }
-        // Case 2: Image with EXIF orientation (only EXIF 5-8 contains bug)
-        else if [.left, .leftMirrored, .right, .rightMirrored].contains(image.imageOrientation) {
-            cgImage = image.cgImage
+        } else {
+            // Case 2: Image with EXIF orientation (only EXIF 5-8 contains bug)
+            if [.left, .leftMirrored, .right, .rightMirrored].contains(image.imageOrientation) {
+                // Fixed by Apple in iOS 14+
+                if #available(iOS 14.0, watchOS 7.0, tvOS 14.0, *) {
+                    // Do nothing
+                } else {
+                    cgImage = image.cgImage
+                }
+            }
         }
         // If we have CGImage, use CGImage based API, else use UIImage based API
         if let cgImage = cgImage {
@@ -183,32 +183,6 @@ public struct WebImage : View {
             }
         } else {
             return AnyView(configure(image: .empty))
-        }
-    }
-    
-    /// Animated Image Support
-    func setupPlayer(image: PlatformImage?) {
-        if imagePlayer != nil {
-            return
-        }
-        if let animatedImage = image as? SDAnimatedImageProvider {
-            if let imagePlayer = SDAnimatedImagePlayer(provider: animatedImage) {
-                imagePlayer.animationFrameHandler = { (_, frame) in
-                    self.currentFrame = frame
-                }
-                // Setup configuration
-                if let maxBufferSize = maxBufferSize {
-                    imagePlayer.maxBufferSize = maxBufferSize
-                }
-                if let customLoopCount = customLoopCount {
-                    imagePlayer.totalLoopCount = UInt(customLoopCount)
-                }
-                imagePlayer.runLoopMode = runLoopMode
-                imagePlayer.playbackRate = playbackRate
-                
-                self.imagePlayer = imagePlayer
-                imagePlayer.startPlaying()
-            }
         }
     }
 }
@@ -261,29 +235,6 @@ extension WebImage {
     /// - Returns: A view that triggers `action` when this image load fails.
     public func onFailure(perform action: ((Error) -> Void)? = nil) -> WebImage {
         self.imageManager.failureBlock = action
-        return self
-    }
-    
-    /// Provide the action when image load successes.
-    /// - Parameters:
-    ///   - action: The action to perform. The first arg is the loaded image. If `action` is `nil`, the call has no effect.
-    /// - Returns: A view that triggers `action` when this image load successes.
-    public func onSuccess(perform action: @escaping (PlatformImage) -> Void) -> WebImage {
-        let action = action
-        self.imageManager.successBlock = { image, _, _ in
-            action(image)
-        }
-        return self
-    }
-    
-    /// Provide the action when image load successes.
-    /// - Parameters:
-    ///   - action: The action to perform. The first arg is the loaded image, the second arg is the cache type loaded from. If `action` is `nil`, the call has no effect.
-    /// - Returns: A view that triggers `action` when this image load successes.
-    public func onSuccess(perform action: @escaping (PlatformImage, SDImageCacheType) -> Void) -> WebImage {
-        self.imageManager.successBlock = { image, _, cacheType in
-            action(image, cacheType)
-        }
         return self
     }
     
@@ -372,9 +323,8 @@ extension WebImage {
     /// - Note: Pass nil to disable customization, use the image itself loop count (`animatedImageLoopCount`) instead
     /// - Parameter loopCount: The animation loop count
     public func customLoopCount(_ loopCount: UInt?) -> WebImage {
-        var result = self
-        result.customLoopCount = loopCount
-        return result
+        self.imagePlayer.customLoopCount = loopCount
+        return self
     }
     
     /// Provide a max buffer size by bytes. This is used to adjust frame buffer count and can be useful when the decoding cost is expensive (such as Animated WebP software decoding). Default is nil.
@@ -384,9 +334,8 @@ extension WebImage {
     /// `UInt.max` means cache all the buffer. (Lowest CPU and Highest Memory)
     /// - Parameter bufferSize: The max buffer size
     public func maxBufferSize(_ bufferSize: UInt?) -> WebImage {
-        var result = self
-        result.maxBufferSize = bufferSize
-        return result
+        self.imagePlayer.maxBufferSize = bufferSize
+        return self
     }
     
     /// The runLoopMode when animation is playing on. Defaults is `.common`
@@ -394,9 +343,8 @@ extension WebImage {
     /// - Note: This is useful for some cases, for example, always specify NSDefaultRunLoopMode, if you want to pause the animation when user scroll (for Mac user, drag the mouse or touchpad)
     /// - Parameter runLoopMode: The runLoopMode for animation
     public func runLoopMode(_ runLoopMode: RunLoop.Mode) -> WebImage {
-        var result = self
-        result.runLoopMode = runLoopMode
-        return result
+        self.imagePlayer.runLoopMode = runLoopMode
+        return self
     }
     
     /// Whether or not to pause the animation (keep current frame), instead of stop the animation (frame index reset to 0). When `isAnimating` binding value changed to false. Defaults is true.
@@ -425,9 +373,15 @@ extension WebImage {
     /// `< 0.0` is not supported currently and stop animation. (may support reverse playback in the future)
     /// - Parameter playbackRate: The animation playback rate.
     public func playbackRate(_ playbackRate: Double) -> WebImage {
-        var result = self
-        result.playbackRate = playbackRate
-        return result
+        self.imagePlayer.playbackRate = playbackRate
+        return self
+    }
+    
+    /// Control the animation playback mode. Default is .normal
+    /// - Parameter playbackMode: The playback mode, including normal order, reverse order, bounce order and reversed bounce order.
+    public func playbackMode(_ playbackMode: SDAnimatedImagePlaybackMode) -> WebImage {
+        self.imagePlayer.playbackMode = playbackMode
+        return self
     }
 }
 

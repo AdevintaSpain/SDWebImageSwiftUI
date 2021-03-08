@@ -18,48 +18,17 @@ class UserSettings: ObservableObject {
 }
 
 #if os(watchOS)
-// watchOS does not provide built-in indicator, use Espera's custom indicator
-struct ActivityIndicator : View {
-    @Binding var isAnimating: Bool
-    var body: some View {
-        if isAnimating {
-            return AnyView(LoadingFlowerView()
-                .frame(width: 30, height: 30))
-        } else {
-            return AnyView(EmptyView()
-                .frame(width: 30, height: 30))
-        }
-    }
-}
-
-struct ProgressIndicator : View {
-    @Binding var isAnimating: Bool
-    @Binding var progress: Double
-    var body: some View {
-        if isAnimating {
-            return AnyView(StretchProgressView(progress: $progress)
-                .frame(width: 140, height: 10))
-        } else {
-            return AnyView(EmptyView()
-                .frame(width: 140, height: 10))
-        }
-    }
-}
-
-extension Indicator where T == ActivityIndicator {
-    /// Activity Indicator
+@available(iOS 14.0, OSX 11.0, tvOS 14.0, watchOS 7.0, *)
+extension Indicator where T == ProgressView<EmptyView, EmptyView> {
     static var activity: Indicator {
-        Indicator { isAnimating, _ in
-            ActivityIndicator(isAnimating: isAnimating)
+        Indicator { isAnimating, progress in
+            ProgressView()
         }
     }
-}
-
-extension Indicator where T == ProgressIndicator {
-    /// Progress Indicator
+    
     static var progress: Indicator {
         Indicator { isAnimating, progress in
-            ProgressIndicator(isAnimating: isAnimating, progress: progress)
+            ProgressView(value: progress.wrappedValue)
         }
     }
 }
@@ -155,7 +124,7 @@ struct ContentView: View {
                     HStack {
                         if self.animated {
                             #if os(macOS) || os(iOS) || os(tvOS)
-                            AnimatedImage(url: URL(string:url))
+                            AnimatedImage(url: URL(string:url), isAnimating: .constant(true))
                             .onViewUpdate { view, context in
                             #if os(macOS)
                                 view.toolTip = url
@@ -178,7 +147,7 @@ struct ContentView: View {
                             .frame(width: CGFloat(100), height: CGFloat(100), alignment: .center)
                             #endif
                         } else {
-                            WebImage(url: URL(string:url))
+                            WebImage(url: URL(string:url), isAnimating: .constant(true))
                             .resizable()
                             /**
                              .placeholder {
